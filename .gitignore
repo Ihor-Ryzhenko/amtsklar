@@ -1,0 +1,33 @@
+# internal working notes, never published
+/internal/
+CLAUDE.local.md
+.claude/
+
+# secrets
+.env*
+
+# dependencies
+/node_modules
+
+# build output
+/.next/
+/out/
+/build/
+next-env.d.ts
+*.tsbuildinfo
+
+# test output
+/coverage/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
+# deployment
+.vercel
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+pnpm-debug.log*
