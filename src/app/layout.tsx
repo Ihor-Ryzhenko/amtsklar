@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Behördenbrief",
+  title: "Amtsklar",
   description:
     "Erklärt Briefe deutscher Behörden: wer schreibt, was verlangt wird und bis wann.",
 };

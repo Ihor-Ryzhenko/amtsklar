@@ -9,5 +9,5 @@ test("home page has one main landmark containing a single top-level heading", ()
   const headings = within(main).getAllByRole("heading", { level: 1 });
 
   expect(headings).toHaveLength(1);
-  expect(headings[0]?.textContent).toBe("Behördenbrief");
+  expect(headings[0]?.textContent).toBe("Amtsklar");
 });
