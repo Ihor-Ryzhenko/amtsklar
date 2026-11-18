@@ -27,7 +27,7 @@ Blocking:
 - code that produces a wrong result: wrong date, wrong amount, data lost or shown to the
   wrong place;
 - an acceptance criterion that is not met;
-- a violation of the Type safety or Size limit rule in the Code section;
+- a violation of the Type safety rule in the Code section;
 - a missing test for an area listed under Tests.
 
 Everything else is non-blocking. Report at most five non-blocking findings per review,
@@ -67,8 +67,6 @@ Any violation in this section is blocking.
 
 - **Type safety.** TypeScript in strict mode. No `any`, no non-null assertion and no
   `eslint-disable` without a comment that explains why it cannot be avoided.
-- **Size limit.** A route handler that accepts letter text rejects input above the size
-  limit before it calls the model.
 - No dead code. No options, parameters or extension points that no acceptance criterion
   of the pull request requires.
 - Dates and amounts shown to the user come from structured fields computed by code, never
