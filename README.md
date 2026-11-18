@@ -1,4 +1,4 @@
-# Behördenbrief
+# Amtsklar
 
 **DE** — Erklärt Briefe deutscher Behörden in einfacher Sprache: Wer schreibt, was wird
 verlangt und bis wann. Keine Rechtsberatung. In Arbeit.
