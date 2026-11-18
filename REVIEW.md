@@ -8,9 +8,10 @@ change are in the pull request description.
 - Check the diff against the acceptance criteria in the pull request description. Name
   every criterion that is not met or cannot be verified from the diff.
 - Report concrete problems only. Do not summarise the change and do not praise it.
-- Every finding cites a file and line. A claim about behaviour is based on the code you
-  read, not on the name of a function or variable. A finding under a rule in this file
-  quotes that rule.
+- Every finding cites a file and line. A finding about an acceptance criterion that is not
+  met cites that criterion from the pull request description instead. A claim about
+  behaviour is based on the code you read, not on the name of a function or variable. A
+  finding under a rule in this file quotes that rule.
 - Before posting, check each finding against the code once more. If you are not sure the
   problem is real, drop it.
 - If the pull request changes `REVIEW.md` or anything under `.github/`, say so in the first
@@ -26,11 +27,8 @@ Blocking:
 - code that produces a wrong result: wrong date, wrong amount, data lost or shown to the
   wrong place;
 - an acceptance criterion that is not met;
-- a missing test for logic listed under Tests;
-- a route handler that accepts letter text without rejecting input above the size limit
-  before it calls the model;
-- `any`, a non-null assertion or `eslint-disable` without a comment that explains why it
-  cannot be avoided.
+- a violation of the Type safety or Size limit rule in the Code section;
+- a missing test for an area listed under Tests.
 
 Everything else is non-blocking. Report at most five non-blocking findings per review,
 the most important first.
@@ -67,8 +65,10 @@ Any violation in this section is blocking.
 
 ## Code
 
-- TypeScript in strict mode. No `any`, no non-null assertion and no `eslint-disable`
-  without a comment that explains why it cannot be avoided.
+- **Type safety.** TypeScript in strict mode. No `any`, no non-null assertion and no
+  `eslint-disable` without a comment that explains why it cannot be avoided.
+- **Size limit.** A route handler that accepts letter text rejects input above the size
+  limit before it calls the model.
 - No dead code. No options, parameters or extension points that no acceptance criterion
   of the pull request requires.
 - Dates and amounts shown to the user come from structured fields computed by code, never
