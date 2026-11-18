@@ -29,6 +29,9 @@ next-env.d.ts
 # written by `next dev` for coding agents
 /AGENTS.md
 
+# local MCP servers (IDE port, machine-specific)
+/.mcp.json
+
 # misc
 .DS_Store
 *.pem
