@@ -72,6 +72,9 @@ Any violation in this section is blocking.
 - Dates and amounts shown to the user come from structured fields computed by code, never
   from free text written by a language model.
 - A field is shown as verified only if its quote was found in the letter text.
+- **File names.** Files under `src/` and `e2e/` are named in kebab-case
+  (`letter-input.tsx`), React components in PascalCase (`LetterInput`). Next.js route
+  files keep the names Next.js requires (`page.tsx`, `layout.tsx`).
 
 ## Tests
 
