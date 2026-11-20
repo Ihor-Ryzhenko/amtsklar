@@ -1,11 +1,15 @@
 import { expect, test } from "@playwright/test";
 
-test("home page opens", async ({ page }) => {
+test("home page has one main landmark with a single top-level heading", async ({
+  page,
+}) => {
   await page.goto("/");
 
-  await expect(
-    page.getByRole("heading", { level: 1, name: "Amtsklar" }),
-  ).toBeVisible();
+  const main = page.getByRole("main");
+  await expect(main).toHaveCount(1);
+  const heading = main.getByRole("heading", { level: 1 });
+  await expect(heading).toHaveCount(1);
+  await expect(heading).toHaveText("Amtsklar");
 });
 
 test("letter text over the limit is kept and flagged", async ({ page }) => {
