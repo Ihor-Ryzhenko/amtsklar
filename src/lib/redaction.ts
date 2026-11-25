@@ -97,14 +97,21 @@ const EMAIL = new RegExp(
   "gu",
 );
 
-// A dot is not a phone separator, so dates (01.12.2026) and amounts (1.234,56) never
-// match. Numbers of the authority are redacted too; no extracted field needs them.
+// A dot is not a phone separator, so dotted dates (01.12.2026) and amounts (1.234,56)
+// never match; dates with slashes or hyphens are dropped in `findPhones`. Numbers of the
+// authority are redacted too; no extracted field needs them.
 const PHONE = new RegExp(
   String.raw`(?<![\p{L}\p{N}+(])\(?(?:\+|0)[\d${SPACE_CHARS}/()\-]*\d`,
   "gu",
 );
 const PHONE_MIN_DIGITS = 7;
 const PHONE_MAX_DIGITS = 16;
+
+// Day, separator, month, the same separator, year: 01.12.2026, 01/12/2026, 03-12-26.
+const DATE_SHAPE = new RegExp(
+  String.raw`(?<!\d)(\d{1,2})([./\-])(\d{1,2})\2(?:\d{4}|\d{2})(?!\d)`,
+  "gu",
+);
 
 // Only a date right after a birth keyword is redacted. Any other date may be the letter
 // date or a deadline, and the deadline is the whole point of the app.
@@ -156,7 +163,6 @@ const IDENTIFIER_TOKEN = new RegExp(
 );
 // Short letter groups inside a number, as in `12 010280 M 123`.
 const CONNECTOR_TOKEN = /^[A-Z]{1,3}$/;
-const DATE_TOKEN = /^\d{1,2}\.\d{1,2}\.(?:\d{4}|\d{2})$/;
 const MAX_IDENTIFIER_TOKENS = 6;
 const TOKEN = /\S+/y;
 const TOKEN_GAP = /[^\S\n]+/y;
@@ -347,8 +353,23 @@ function ibanChecksumValid(iban: string): boolean {
 
 function findPhones(text: string): SensitiveMatch[] {
   return findAll(text, PHONE, "phone").filter((match) => {
-    const digits = text.slice(match.start, match.end).replace(/\D/g, "").length;
-    return digits >= PHONE_MIN_DIGITS && digits <= PHONE_MAX_DIGITS;
+    const value = text.slice(match.start, match.end);
+    const digits = value.replace(/\D/g, "").length;
+    return (
+      digits >= PHONE_MIN_DIGITS &&
+      digits <= PHONE_MAX_DIGITS &&
+      !containsDate(value)
+    );
+  });
+}
+
+// A date may be the letter date or a deadline, so nothing that contains one is
+// redacted, except after a birth keyword.
+function containsDate(value: string): boolean {
+  return Array.from(value.matchAll(DATE_SHAPE)).some((match) => {
+    const day = Number(match[1]);
+    const month = Number(match[3]);
+    return day >= 1 && day <= 31 && month >= 1 && month <= 12;
   });
 }
 
@@ -385,11 +406,7 @@ function scanIdentifier(text: string, from: number): number {
     const word = raw.replace(/[.,;:)]+$/, "");
     const endsSentence = word.length < raw.length;
 
-    if (
-      IDENTIFIER_TOKEN.test(word) &&
-      /\d/.test(word) &&
-      !DATE_TOKEN.test(word)
-    ) {
+    if (IDENTIFIER_TOKEN.test(word) && /\d/.test(word) && !containsDate(word)) {
       end = token.index + word.length;
     } else if (!(end > from && !endsSentence && CONNECTOR_TOKEN.test(word))) {
       break;

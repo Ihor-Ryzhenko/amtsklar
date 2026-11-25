@@ -78,6 +78,7 @@ describe("phone", () => {
     ["(030) 1234567"],
     ["0049 30 1234567"],
     ["0151 23456789"],
+    ["0151-123-4567"],
   ])("finds %s", (number) => {
     expect(found(`Telefon: ${number}`)).toEqual([["phone", number]]);
   });
@@ -87,6 +88,12 @@ describe("phone", () => {
       found(
         "Am 01.12.2026 um 09:30 Uhr, 01067 Dresden, Betrag 0,50 € und 1.234,56 €.",
       ),
+    ).toEqual([]);
+  });
+
+  test("leaves dates written with slashes or hyphens", () => {
+    expect(
+      found("Frist bis zum 01/12/2026, Termin am 03-12-2026 oder 05/12/26."),
     ).toEqual([]);
   });
 
@@ -139,6 +146,7 @@ describe("numbers after a keyword", () => {
   test("does not take a date as the number", () => {
     expect(found("Ihr Zeichen vom 01.12.2026")).toEqual([]);
     expect(found("Aktenzeichen\n01.12.2026")).toEqual([]);
+    expect(found("Aktenzeichen: 03/12/2026")).toEqual([]);
   });
 
   test("leaves the full stop at the end of a sentence", () => {
