@@ -196,7 +196,8 @@ const TAX_ID_CANDIDATE = new RegExp(
   "gu",
 );
 
-const STREET_SUFFIX = /stra(?:ß|ss)e$/i;
+// The profile may hold the street in full or abbreviated; the letter may use either.
+const STREET_SUFFIX = /(?:stra(?:ß|ss)e|str\.?)$/i;
 const STREET_WITH_NUMBER =
   /^(.*?)\s*(\d+\s*[a-z]?(?:\s*[-/]\s*\d+\s*[a-z]?)?)$/i;
 const MIN_NAME_PART_LENGTH = 2;
@@ -487,7 +488,7 @@ function streetPattern(street: string): RegExp | undefined {
 
   const suffix = STREET_SUFFIX.exec(name);
   const namePattern = suffix
-    ? `${flexible(name.slice(0, suffix.index))}(?:stra(?:ß|ss)e|str\\.)`
+    ? `${flexible(name.slice(0, suffix.index))}(?:stra(?:ß|ss)e|str\\.?)`
     : flexible(name);
   const numberPattern = houseNumber
     ? `${SPACE}*${houseNumber
@@ -504,16 +505,18 @@ function streetPattern(street: string): RegExp | undefined {
 }
 
 // The city alone is not redacted: it is usually also the city of the authority
-// ("Jobcenter Musterstadt"), and the sender is one of the fields to extract.
+// ("Jobcenter Musterstadt"), and the sender is one of the fields to extract. Without a
+// city in the profile, the postal code is redacted on its own.
 function postalCodePattern(
   postalCode: string,
   city: string,
 ): RegExp | undefined {
   const code = postalCode.trim();
   const town = city.trim();
-  if (!code || !town) return undefined;
+  if (!code) return undefined;
+  const cityPattern = town ? `\\s+${flexible(town)}` : "";
   return new RegExp(
-    `${NOT_WORD_BEFORE}${escapeRegex(code)}\\s+${flexible(town)}${NOT_WORD_AFTER}`,
+    `${NOT_WORD_BEFORE}${escapeRegex(code)}${cityPattern}${NOT_WORD_AFTER}`,
     "giu",
   );
 }

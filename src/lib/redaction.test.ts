@@ -227,15 +227,30 @@ describe("profile", () => {
     ]);
   });
 
-  test.each([
-    ["Musterstraße 12"],
-    ["Musterstrasse 12"],
-    ["Musterstr. 12"],
-    ["MUSTERSTR.12"],
-  ])("finds the street written as %s", (street) => {
-    expect(found(`${street}, 12345 Musterstadt`, PROFILE)).toEqual([
-      ["address", street],
+  const streetSpellings = [
+    "Musterstraße 12",
+    "Musterstrasse 12",
+    "Musterstr. 12",
+    "Musterstr 12",
+    "MUSTERSTR.12",
+  ];
+  test.each(
+    ["Musterstraße 12", "Musterstrasse 12", "Musterstr. 12"].flatMap(
+      (inProfile) =>
+        streetSpellings.map((inLetter) => [inProfile, inLetter] as const),
+    ),
+  )("profile street %s finds %s", (inProfile, inLetter) => {
+    const profile = { ...PROFILE, street: inProfile };
+    expect(found(`${inLetter}, 12345 Musterstadt`, profile)).toEqual([
+      ["address", inLetter],
       ["address", "12345 Musterstadt"],
+    ]);
+  });
+
+  test("redacts the postal code alone when the profile has no city", () => {
+    const profile = { ...NO_PROFILE, postalCode: "12345" };
+    expect(found("12345 Musterstadt, nicht 123456", profile)).toEqual([
+      ["address", "12345"],
     ]);
   });
 
