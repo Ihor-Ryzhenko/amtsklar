@@ -2,8 +2,10 @@
  * Redaction of personal data before letter text leaves the browser.
  *
  * Rules find structured identifiers (IBAN, e-mail, phone, birth date, case and customer
- * numbers) and the values of the user's profile (name, address). There is no machine
- * recognition of names, which is why the preview also lets the user hide words by hand.
+ * numbers). The recipient's name and address are read from the address block and the
+ * salutation and then searched for in the whole letter, so the user does not have to
+ * type them in. There is no machine recognition of names, and these heuristics miss
+ * some letters, which is why the preview also lets the user hide words by hand.
  * Each distinct value becomes a numbered placeholder such as `[IBAN_1]`; placeholders in
  * the model's answer are filled back in here, in the browser, and nowhere else.
  */
@@ -27,8 +29,8 @@ export interface SensitiveMatch {
   readonly kind: SensitiveKind;
 }
 
-/** Kept only in page memory; there is no storage yet. */
-export interface Profile {
+/** Name and address of a recipient, as read from the letter. */
+interface Profile {
   readonly firstName: string;
   readonly lastName: string;
   readonly street: string;
@@ -215,10 +217,9 @@ const SPELLING_VARIANTS: Readonly<Partial<Record<string, string>>> = {
 };
 const REGEX_SYNTAX = /[\\^$.*+?()[\]{}|/]/g;
 
-export function findSensitive(
-  text: string,
-  profile: Profile,
-): SensitiveMatch[] {
+export function findSensitive(text: string): SensitiveMatch[] {
+  const blocks = findAddressBlocks(text);
+  const profiles = [...blocks.profiles, ...findSalutationNames(text)];
   return resolveOverlaps([
     ...findIbans(text),
     ...findAll(text, EMAIL, "email"),
@@ -227,7 +228,8 @@ export function findSensitive(
     ...findAnchoredIdentifiers(text),
     ...FORMATS.flatMap(([kind, pattern]) => findAll(text, pattern, kind)),
     ...findTaxIds(text),
-    ...findProfileValues(text, profile),
+    ...blocks.addresses,
+    ...profiles.flatMap((profile) => findProfileValues(text, profile)),
   ]);
 }
 
@@ -277,6 +279,117 @@ export function restore(
     (label) => originals.get(label) ?? label,
   );
 }
+
+// Address block of the recipient (DIN 5008) and the salutation. The postal code with its
+// city is the anchor: it starts a line or follows a separator, as in the return address
+// line "Jobcenter Musterstadt · Postfach 10 20 30 · 12340 Musterstadt", or it follows the
+// house number when a pasted block lost its line breaks.
+const CITY_WORD = String.raw`\p{Lu}[\p{L}\-]*`;
+const CITY = String.raw`(?:(?:Bad|St\.|Sankt|Groß|Klein|Neu|Alt)${SPACE}+)?${CITY_WORD}(?:${SPACE}*\(${CITY_WORD}\)|${SPACE}*\/${SPACE}*${CITY_WORD}|${SPACE}+(?:am|an${SPACE}+der|im|in|ob${SPACE}+der|bei|a\.${SPACE}?d\.|a\.|i\.)${SPACE}*${CITY_WORD})?`;
+const POSTAL_CODE_CITY = new RegExp(
+  String.raw`(?<![\p{L}\p{N}])(?:D-?${SPACE}?)?(\d{5})(?!\p{N})${SPACE}+(${CITY})(?![\p{L}\p{N}])`,
+  "gu",
+);
+const NOT_A_CITY: ReadonlySet<string> = new Set(["Euro", "EUR"]);
+const SEPARATOR = new RegExp(
+  String.raw`[,;·•|–\t]|${SPACE}-${SPACE}|${SPACE}{2,}`,
+  "gu",
+);
+const SEPARATOR_AT_END = new RegExp(
+  String.raw`(?:[,;·•|–\t]|${SPACE}-|${SPACE}{2})${SPACE}*$`,
+  "u",
+);
+const HOUSE_NUMBER_AT_END = new RegExp(
+  String.raw`(?<![\p{L}\p{N}])\d{1,4}${SPACE}?[a-zA-Z]?(?:${SPACE}?[-/]${SPACE}?\d{1,4}${SPACE}?[a-zA-Z]?)?$`,
+  "u",
+);
+const POST_BOX = new RegExp(
+  String.raw`^Postfach${SPACE}+\d[\d${SPACE_CHARS}]*$`,
+  "u",
+);
+const STREET_TOKEN = /^(?:\p{Lu}[\p{L}.\-]*|[\p{Ll}]+|&)$/u;
+// "Berliner Straße 5": the street word alone needs the word before it.
+const STREET_WORD =
+  /^(?:Straße|Strasse|Str\.?|Weg|Allee|Platz|Ring|Damm|Ufer|Chaussee|Gasse|Steig|Pfad|Markt)$/u;
+// "Am Markt 3", "An der Kirche 7", "Unter den Linden 5".
+const STREET_PREPOSITION =
+  /^(?:Am|Im|An|Auf|In|Zum|Zur|Unter|Hinter|Vor|Beim|Über)$/u;
+const STREET_ARTICLE = /^(?:der|den|dem|des)$/u;
+const MAX_STREET_WORDS = 5;
+
+const SALUTATION = new RegExp(
+  String.raw`(?<!\p{L})(?:sehr${SPACE}+geehrte[rn]?|guten${SPACE}+tag|liebe[rn]?|hallo)(?!\p{L})`,
+  "giu",
+);
+// With "Frau" or "Herr", a single word is the surname; "Familie" and "Eheleute" stand
+// before a list of first names that share the surname at the end.
+const PERSONAL_FORMS: ReadonlySet<string> = new Set(["Frau", "Herr", "Herrn"]);
+const COLLECTIVE_FORMS: ReadonlySet<string> = new Set(["Familie", "Eheleute"]);
+const ACADEMIC_TITLE =
+  /^(?:Dr\.|Prof\.|Dr\.-\p{L}+\.|Dipl\.-\p{L}+\.|med\.|jur\.|rer\.|nat\.|phil\.)$/u;
+const NAME_WORD = /^\p{Lu}[\p{L}'’]*(?:-\p{L}[\p{L}'’]*)*$/u;
+const NAME_PARTICLE =
+  /^(?:von|vom|van|de|der|den|del|della|di|da|du|la|le|zu|zur|ten|ter|al|el|bin)$/u;
+const CONJUNCTION = /^(?:und|u\.|&)$/u;
+const MAX_NAME_WORDS = 4;
+// Words that mark the sender rather than a person: "Jobcenter Musterstadt",
+// "Deutsche Rentenversicherung", "Familienkasse".
+const ORGANISATION_WORDS: ReadonlySet<string> = new Set([
+  "jobcenter",
+  "agentur",
+  "gmbh",
+  "ag",
+  "kg",
+  "e.v.",
+  "gemeinde",
+  "landkreis",
+  "kreis",
+  "bezirk",
+  "senat",
+  "polizei",
+  "team",
+  "referat",
+  "abteilung",
+  "deutsche",
+  "deutscher",
+  "stadt",
+  "freie",
+  "postfach",
+]);
+const ORGANISATION_SUFFIXES = [
+  "amt",
+  "behörde",
+  "kasse",
+  "gericht",
+  "bank",
+  "zentrum",
+  "center",
+  "versicherung",
+  "verwaltung",
+  "service",
+  "ministerium",
+  "regierung",
+  "präsidium",
+  "schule",
+  "universität",
+  "büro",
+  "stelle",
+  "stadt",
+] as const;
+// A surname such as "Mai" would otherwise redact "1. Mai 2026", which may be the deadline.
+const CALENDAR_WORDS: ReadonlySet<string> = new Set(
+  [
+    ...MONTHS.split("|"),
+    "Montag",
+    "Dienstag",
+    "Mittwoch",
+    "Donnerstag",
+    "Freitag",
+    "Samstag",
+    "Sonnabend",
+    "Sonntag",
+  ].map((word) => word.toLowerCase()),
+);
 
 function findAll(
   text: string,
@@ -505,20 +618,314 @@ function streetPattern(street: string): RegExp | undefined {
 }
 
 // The city alone is not redacted: it is usually also the city of the authority
-// ("Jobcenter Musterstadt"), and the sender is one of the fields to extract. Without a
-// city in the profile, the postal code is redacted on its own.
+// ("Jobcenter Musterstadt"), and the sender is one of the fields to extract.
 function postalCodePattern(
   postalCode: string,
   city: string,
 ): RegExp | undefined {
   const code = postalCode.trim();
   const town = city.trim();
-  if (!code) return undefined;
-  const cityPattern = town ? `\\s+${flexible(town)}` : "";
+  if (!code || !town) return undefined;
   return new RegExp(
-    `${NOT_WORD_BEFORE}${escapeRegex(code)}${cityPattern}${NOT_WORD_AFTER}`,
+    `${NOT_WORD_BEFORE}${escapeRegex(code)}\\s+${flexible(town)}${NOT_WORD_AFTER}`,
     "giu",
   );
+}
+
+interface Span {
+  readonly start: number;
+  readonly end: number;
+}
+
+interface Person {
+  readonly firstName: string;
+  readonly lastName: string;
+}
+
+/**
+ * Finds postal codes with their city, the street before them and the recipient's name
+ * before the street. Every such address is redacted where it stands, the authority's own
+ * included; only blocks with a person's name become profiles that are searched for in
+ * the whole letter.
+ */
+function findAddressBlocks(text: string): {
+  addresses: SensitiveMatch[];
+  profiles: Profile[];
+} {
+  const addresses: SensitiveMatch[] = [];
+  const profiles: Profile[] = [];
+
+  for (const match of text.matchAll(POSTAL_CODE_CITY)) {
+    const [whole, postalCode, city] = match;
+    if (NOT_A_CITY.has(city)) continue;
+
+    const lineStart = lineStartOf(text, match.index);
+    const head = text.slice(lineStart, match.index);
+    let streetLine: Span | undefined;
+    if (head.trim() === "") {
+      streetLine = previousLine(text, lineStart);
+    } else if (
+      SEPARATOR_AT_END.test(head) ||
+      HOUSE_NUMBER_AT_END.test(head.trimEnd())
+    ) {
+      streetLine = { start: lineStart, end: match.index };
+    } else {
+      // A postal code in the middle of a sentence is not an address line.
+      continue;
+    }
+    addresses.push({
+      start: match.index,
+      end: match.index + whole.length,
+      kind: "address",
+    });
+
+    if (streetLine === undefined) continue;
+    const parts = splitParts(text, streetLine);
+    const streetPart = parts.at(-1);
+    if (streetPart === undefined) continue;
+    const street = splitStreet(text.slice(streetPart.start, streetPart.end));
+    if (street === undefined) continue;
+    const streetStart = streetPart.start + street.start;
+    addresses.push({
+      start: streetStart,
+      end: streetPart.end,
+      kind: "address",
+    });
+
+    const namePart = parts.at(-2);
+    let persons = street.persons;
+    if (persons.length === 0) {
+      persons = namePart
+        ? parsePersons(text.slice(namePart.start, namePart.end))
+        : personsAbove(text, streetLine.start);
+    }
+    for (const person of persons) {
+      profiles.push({
+        ...person,
+        street: text.slice(streetStart, streetPart.end),
+        postalCode,
+        city,
+      });
+    }
+  }
+
+  return { addresses, profiles };
+}
+
+/** Surnames from "Sehr geehrte Frau Müller," and the like. */
+function findSalutationNames(text: string): Profile[] {
+  return Array.from(text.matchAll(SALUTATION)).flatMap((match) => {
+    const from = match.index + match[0].length;
+    const lineEnd = text.indexOf("\n", from);
+    const rest = text.slice(from, lineEnd === -1 ? text.length : lineEnd);
+    const words: string[] = [];
+    for (const word of rest.split(/[,!:]/)[0]?.split(/\s+/) ?? []) {
+      if (word === "") continue;
+      if (!isNameToken(word)) break;
+      words.push(word);
+    }
+    while (words.length > 0 && CONJUNCTION.test(words.at(-1) ?? "")) {
+      words.pop();
+    }
+    return parsePersons(words.join(" "), { requireForm: true }).map(
+      (person) => ({ ...person, street: "", postalCode: "", city: "" }),
+    );
+  });
+}
+
+/**
+ * Splits a street part such as "Frau Anna Müller Lindenstraße 5" into the street and the
+ * name before it. Returns undefined if the part does not end with a house number.
+ */
+function splitStreet(
+  part: string,
+): { start: number; persons: Person[] } | undefined {
+  if (POST_BOX.test(part)) return { start: 0, persons: [] };
+  const houseNumber = HOUSE_NUMBER_AT_END.exec(part);
+  if (!houseNumber) return undefined;
+  const words = Array.from(part.slice(0, houseNumber.index).matchAll(/\S+/g));
+  if (words.length === 0) return undefined;
+  if (!words.every((word) => STREET_TOKEN.test(word[0]))) return undefined;
+
+  let first = words.length - 1;
+  if (STREET_WORD.test(words[first]?.[0] ?? "") && first > 0) first--;
+  for (let i = first - 1; i >= Math.max(0, first - 3); i--) {
+    const word = words[i]?.[0] ?? "";
+    if (STREET_PREPOSITION.test(word)) {
+      first = i;
+      break;
+    }
+    if (!STREET_ARTICLE.test(word) && !NAME_WORD.test(word)) break;
+  }
+
+  const streetStart = words[first]?.index ?? 0;
+  if (first === 0) return { start: 0, persons: [] };
+  const prefix = part.slice(0, streetStart);
+  const persons = parsePersons(prefix);
+  if (persons.length > 0) return { start: streetStart, persons };
+  // Capitalised words before the street that are no name, as in "Alte Dorfstraße 3",
+  // belong to the street, unless they name the authority: its name is one of the fields
+  // to extract. A sentence ("wohnen in der Musterstraße 12") does not.
+  const prefixWords = prefix.split(/\s+/).filter((word) => word !== "");
+  const wholePart =
+    words.length <= MAX_STREET_WORDS &&
+    prefixWords.every(
+      (word) => NAME_WORD.test(word) || STREET_ARTICLE.test(word),
+    ) &&
+    !prefixWords.some(isOrganisationWord);
+  return { start: wholePart ? 0 : streetStart, persons: [] };
+}
+
+/**
+ * The name on the line above the street; "Frau" or "Herrn" may stand on a line of its
+ * own above that.
+ */
+function personsAbove(text: string, lineStart: number): Person[] {
+  const nameLine = previousLine(text, lineStart);
+  if (nameLine === undefined) return [];
+  const formLine = previousLine(text, nameLine.start);
+  const formAbove =
+    formLine !== undefined &&
+    PERSONAL_FORMS.has(text.slice(formLine.start, formLine.end).trim());
+  return parsePersons(text.slice(nameLine.start, nameLine.end), { formAbove });
+}
+
+/**
+ * Reads "Frau Dr. Anna Müller", "Anna und Max Müller" or "Familie von Muster" as people.
+ * Without "Frau" or "Herr", at least first name and surname are needed, so a single
+ * capitalised word is not taken for a name. Returns no one if any word does not fit.
+ */
+function parsePersons(
+  text: string,
+  options: { formAbove?: boolean; requireForm?: boolean } = {},
+): Person[] {
+  let group: { words: string[]; personal: boolean } = {
+    words: [],
+    personal: options.formAbove ?? false,
+  };
+  const groups = [group];
+  let hasForm = options.formAbove ?? false;
+  let wordCount = 0;
+
+  for (const word of text.split(/\s+/)) {
+    if (word === "") continue;
+    if (CONJUNCTION.test(word)) {
+      if (group.words.length === 0) return [];
+      group = { words: [], personal: false };
+      groups.push(group);
+    } else if (PERSONAL_FORMS.has(word)) {
+      hasForm = true;
+      group.personal = true;
+    } else if (COLLECTIVE_FORMS.has(word)) {
+      hasForm = true;
+    } else if (ACADEMIC_TITLE.test(word)) {
+      continue;
+    } else if (
+      (NAME_WORD.test(word) || NAME_PARTICLE.test(word)) &&
+      !isOrganisationWord(word)
+    ) {
+      group.words.push(word);
+      wordCount++;
+    } else {
+      return [];
+    }
+  }
+
+  if (options.requireForm && !hasForm) return [];
+  if (!hasForm && wordCount < 2) return [];
+  if (groups.some((group) => group.words.length === 0)) return [];
+  if (groups.some((group) => group.words.length > MAX_NAME_WORDS)) return [];
+
+  const named = groups.map(({ words, personal }, index) => {
+    const isLast = index === groups.length - 1;
+    const particle = words.findIndex(
+      (word, i) => i > 0 && NAME_PARTICLE.test(word),
+    );
+    if (particle > 0) {
+      return {
+        firstName: words.slice(0, particle).join(" "),
+        lastName: words.slice(particle).join(" "),
+      };
+    }
+    if (words.length === 1) {
+      const word = words[0] ?? "";
+      return personal || isLast
+        ? { firstName: "", lastName: word }
+        : { firstName: word, lastName: "" };
+    }
+    return {
+      firstName: words.slice(0, -1).join(" "),
+      lastName: words.at(-1) ?? "",
+    };
+  });
+
+  const sharedSurname = named.at(-1)?.lastName ?? "";
+  return named.map((person) =>
+    withoutCalendarWords({
+      firstName: person.firstName,
+      lastName: person.lastName || sharedSurname,
+    }),
+  );
+}
+
+function withoutCalendarWords(person: Person): Person {
+  const isCalendar = (word: string) => CALENDAR_WORDS.has(word.toLowerCase());
+  return {
+    firstName: person.firstName
+      .split(" ")
+      .filter((word) => !isCalendar(word))
+      .join(" "),
+    lastName: isCalendar(person.lastName) ? "" : person.lastName,
+  };
+}
+
+function isNameToken(word: string): boolean {
+  return (
+    NAME_WORD.test(word) ||
+    NAME_PARTICLE.test(word) ||
+    CONJUNCTION.test(word) ||
+    ACADEMIC_TITLE.test(word) ||
+    PERSONAL_FORMS.has(word) ||
+    COLLECTIVE_FORMS.has(word)
+  );
+}
+
+function isOrganisationWord(word: string): boolean {
+  const lower = word.toLowerCase();
+  return (
+    ORGANISATION_WORDS.has(lower) ||
+    ORGANISATION_SUFFIXES.some((suffix) => lower.endsWith(suffix))
+  );
+}
+
+/** The parts of a line between separators, trimmed, as positions in `text`. */
+function splitParts(text: string, line: Span): Span[] {
+  const content = text.slice(line.start, line.end);
+  const parts: Span[] = [];
+  let from = 0;
+  for (const separator of [...content.matchAll(SEPARATOR), undefined]) {
+    const to = separator ? separator.index : content.length;
+    const raw = content.slice(from, to);
+    const leading = raw.length - raw.trimStart().length;
+    const trimmed = raw.trim();
+    if (trimmed !== "") {
+      const start = line.start + from + leading;
+      parts.push({ start, end: start + trimmed.length });
+    }
+    if (separator) from = separator.index + separator[0].length;
+  }
+  return parts;
+}
+
+function lineStartOf(text: string, index: number): number {
+  return index === 0 ? 0 : text.lastIndexOf("\n", index - 1) + 1;
+}
+
+/** The line before the one that starts at `lineStart`, without its line break. */
+function previousLine(text: string, lineStart: number): Span | undefined {
+  if (lineStart === 0) return undefined;
+  const end = lineStart - 1;
+  return { start: lineStartOf(text, end), end };
 }
 
 /**

@@ -1,38 +1,38 @@
 import { describe, expect, test } from "vitest";
 import {
   findSensitive,
-  type Profile,
   redact,
   restore,
   type SensitiveKind,
 } from "./redaction";
 
 // All names, numbers and addresses below are invented.
-const NO_PROFILE: Profile = {
-  firstName: "",
-  lastName: "",
-  street: "",
-  postalCode: "",
-  city: "",
-};
-
-const PROFILE: Profile = {
-  firstName: "Max",
-  lastName: "Mustermann",
-  street: "Musterstraße 12",
-  postalCode: "12345",
-  city: "Musterstadt",
-};
+const BLOCK = "Herrn\nMax Mustermann\nMusterstraße 12\n12345 Musterstadt";
 
 /** The redacted spans of `text`, as `[kind, value]` pairs in text order. */
-function found(
-  text: string,
-  profile: Profile = NO_PROFILE,
-): [SensitiveKind, string][] {
-  return findSensitive(text, profile).map((match) => [
+function found(text: string): [SensitiveKind, string][] {
+  return findSensitive(text).map((match) => [
     match.kind,
     text.slice(match.start, match.end),
   ]);
+}
+
+/** Like `found`, but only the spans of `kind`. */
+function foundOf(text: string, kind: SensitiveKind): string[] {
+  return found(text)
+    .filter(([matchKind]) => matchKind === kind)
+    .map(([, value]) => value);
+}
+
+/**
+ * The spans redacted in `body` when it follows the address block `block`: what the
+ * letter's recipient leads to elsewhere in the text.
+ */
+function foundAfter(block: string, body: string): [SensitiveKind, string][] {
+  const text = `${block}\n\n${body}`;
+  return findSensitive(text)
+    .filter((match) => match.start > block.length)
+    .map((match) => [match.kind, text.slice(match.start, match.end)]);
 }
 
 describe("IBAN", () => {
@@ -85,8 +85,9 @@ describe("phone", () => {
 
   test("leaves dates, amounts, postal codes and times", () => {
     expect(
-      found(
+      foundOf(
         "Am 01.12.2026 um 09:30 Uhr, 01067 Dresden, Betrag 0,50 € und 1.234,56 €.",
+        "phone",
       ),
     ).toEqual([]);
   });
@@ -98,8 +99,8 @@ describe("phone", () => {
   });
 
   test("stops at the end of the line", () => {
-    expect(found("Tel. 030 1234567\n01067 Dresden")).toEqual([
-      ["phone", "030 1234567"],
+    expect(foundOf("Tel. 030 1234567\n01067 Dresden", "phone")).toEqual([
+      "030 1234567",
     ]);
   });
 });
@@ -181,30 +182,229 @@ describe("numbers with a recognisable format", () => {
   });
 });
 
-describe("profile", () => {
-  test("finds the full name, the surname and the first name", () => {
+describe("recipient in the address block", () => {
+  test.each([
+    ["form on its own line", BLOCK],
+    [
+      "form before the name",
+      "Herrn Max Mustermann\nMusterstraße 12\n12345 Musterstadt",
+    ],
+    ["no form", "Max Mustermann\nMusterstraße 12\n12345 Musterstadt"],
+    [
+      "one line with commas",
+      "Herrn Max Mustermann, Musterstraße 12, 12345 Musterstadt",
+    ],
+    [
+      "line breaks lost",
+      "Herrn Max Mustermann Musterstraße 12 12345 Musterstadt",
+    ],
+    [
+      "academic title",
+      "Herrn Dr. Max Mustermann\nMusterstraße 12\n12345 Musterstadt",
+    ],
+  ])("%s", (_, block) => {
+    expect(foundOf(block, "address")).toEqual([
+      "Musterstraße 12",
+      "12345 Musterstadt",
+    ]);
     expect(
-      found(
-        "Herrn Max Mustermann\nSehr geehrter Herr Mustermann,\nlieber Max,",
-        PROFILE,
+      foundAfter(
+        block,
+        "Sie, Max, wohnen in der Musterstraße 12, 12345 Musterstadt. Mustermann",
       ),
     ).toEqual([
-      ["name", "Max Mustermann"],
+      ["name", "Max"],
+      ["address", "Musterstraße 12"],
+      ["address", "12345 Musterstadt"],
       ["name", "Mustermann"],
+    ]);
+  });
+
+  test("reads street names in several shapes", () => {
+    for (const street of [
+      "Am Markt 3a",
+      "Berliner Straße 5",
+      "Unter den Linden 12-14",
+      "Alte Dorfstraße 7",
+      "Karl-Marx-Allee 100/2",
+    ]) {
+      expect(
+        foundOf(`Frau\nAnna Muster\n${street}\n12345 Musterstadt`, "address"),
+      ).toEqual([street, "12345 Musterstadt"]);
+    }
+  });
+
+  test("reads cities of more than one word", () => {
+    for (const city of [
+      "Frankfurt am Main",
+      "Halle (Saale)",
+      "Bad Musterbach",
+      "Mülheim an der Ruhr",
+      "Musterstadt-Nord",
+    ]) {
+      expect(foundOf(`Lindenweg 1\n12345 ${city}`, "address")).toEqual([
+        "Lindenweg 1",
+        `12345 ${city}`,
+      ]);
+    }
+  });
+
+  test("reads two people with a shared surname", () => {
+    expect(
+      foundAfter(
+        "Eheleute\nAnna und Max Mustermann\nMusterstraße 12\n12345 Musterstadt",
+        "Anna, Max",
+      ),
+    ).toEqual([
+      ["name", "Anna"],
       ["name", "Max"],
     ]);
   });
 
+  test("keeps the surname particle with the surname", () => {
+    expect(
+      foundAfter(
+        "Frau\nHanna-Lena von Muster\nMusterweg 1\n12345 Musterstadt",
+        "Hanna, Lena, von Muster, von Amts wegen",
+      ),
+    ).toEqual([
+      ["name", "Hanna"],
+      ["name", "Lena"],
+      ["name", "von Muster"],
+    ]);
+  });
+
+  test("redacts the authority's address but not its name", () => {
+    const line =
+      "Jobcenter Musterstadt · Postfach 10 20 30 · 12340 Musterstadt";
+    expect(found(line)).toEqual([
+      ["address", "Postfach 10 20 30"],
+      ["address", "12340 Musterstadt"],
+    ]);
+    expect(
+      found("Agentur für Arbeit Musterstadt\nMusterweg 3\n12340 Musterstadt"),
+    ).toEqual([
+      ["address", "Musterweg 3"],
+      ["address", "12340 Musterstadt"],
+    ]);
+    expect(
+      foundAfter(
+        "Familienkasse Musterstadt\nMusterweg 3\n12340 Musterstadt",
+        "Ihre Familienkasse Musterstadt",
+      ),
+    ).toEqual([]);
+  });
+
+  test("keeps the authority's name out of a street on a joined line", () => {
+    expect(
+      found("Familienkasse Musterstadt Musterweg 3 12340 Musterstadt"),
+    ).toEqual([
+      ["address", "Musterweg 3"],
+      ["address", "12340 Musterstadt"],
+    ]);
+  });
+
+  test("does not take the first word of a two-word street for a name", () => {
+    expect(
+      found("Herrn Max Mustermann Berliner Straße 5 12345 Musterstadt"),
+    ).toEqual([
+      ["name", "Max Mustermann"],
+      ["address", "Berliner Straße 5"],
+      ["address", "12345 Musterstadt"],
+    ]);
+  });
+
+  test("takes a single word for a surname under a form on its own line", () => {
+    expect(
+      foundAfter("Frau\nMuster\nMusterweg 1\n12345 Musterstadt", "Muster"),
+    ).toEqual([["name", "Muster"]]);
+    expect(
+      foundAfter("Muster\nMusterweg 1\n12345 Musterstadt", "Muster"),
+    ).toEqual([]);
+  });
+
+  test("does not take a postal code in the middle of a sentence", () => {
+    expect(found("Wir zahlen 12000 Euro an 12345 Personen.")).toEqual([]);
+    expect(found("12000 Euro werden erstattet.")).toEqual([]);
+  });
+
+  test("leaves the city when it is not next to the postal code", () => {
+    expect(foundAfter(BLOCK, "Jobcenter Musterstadt, Musterstadt")).toEqual([]);
+  });
+
+  test("leaves another house number in the same street", () => {
+    expect(foundAfter(BLOCK, "Musterstraße 120")).toEqual([]);
+  });
+
+  test("does not take a single word without a form for a name", () => {
+    expect(
+      foundOf("Bürgeramt\nRathausplatz 1\n12340 Musterstadt", "name"),
+    ).toEqual([]);
+  });
+
+  test("does not redact dates when the surname is a month", () => {
+    expect(
+      foundAfter(
+        "Frau\nAnna Mai\nMusterweg 1\n12345 Musterstadt",
+        "Frist bis zum 1. Mai 2026, Anna",
+      ),
+    ).toEqual([["name", "Anna"]]);
+  });
+});
+
+describe("recipient in the salutation", () => {
+  test.each([
+    ["Sehr geehrter Herr Mustermann,"],
+    ["Sehr geehrte Frau Dr. Mustermann,"],
+    ["Guten Tag Herr Mustermann"],
+  ])("%s", (salutation) => {
+    expect(foundAfter(salutation, "Herr Mustermann zahlt.")).toEqual([
+      ["name", "Mustermann"],
+    ]);
+  });
+
+  test("reads several people in one salutation", () => {
+    expect(
+      foundAfter(
+        "Sehr geehrte Frau Muster, sehr geehrter Herr Mustermann,",
+        "Muster, Mustermann",
+      ),
+    ).toEqual([
+      ["name", "Muster"],
+      ["name", "Mustermann"],
+    ]);
+  });
+
+  test("reads no name from a salutation without one", () => {
+    expect(found("Sehr geehrte Damen und Herren,\nDamen")).toEqual([]);
+    expect(found("Liebe Kundin, lieber Kunde,")).toEqual([]);
+  });
+
+  test("finds the surname also when there is no address block", () => {
+    expect(
+      found("Sehr geehrter Herr Mustermann,\nBedarfsgemeinschaft Mustermann"),
+    ).toEqual([
+      ["name", "Mustermann"],
+      ["name", "Mustermann"],
+    ]);
+  });
+});
+
+describe("name and address variants in the letter", () => {
   test("ignores case, word order and soft hyphens", () => {
-    expect(found("MUSTERMANN, MAX und Muster­mann", PROFILE)).toEqual([
+    expect(foundAfter(BLOCK, "MUSTERMANN, MAX und Muster­mann")).toEqual([
       ["name", "MUSTERMANN, MAX"],
       ["name", "Muster­mann"],
     ]);
   });
 
   test("matches either umlaut spelling", () => {
-    const profile = { ...NO_PROFILE, lastName: "Müller" };
-    expect(found("Herr Mueller, Frau MÜLLER, Herr Müller", profile)).toEqual([
+    expect(
+      foundAfter(
+        "Sehr geehrter Herr Müller,",
+        "Herr Mueller, Frau MÜLLER, Herr Müller",
+      ),
+    ).toEqual([
       ["name", "Mueller"],
       ["name", "MÜLLER"],
       ["name", "Müller"],
@@ -212,19 +412,7 @@ describe("profile", () => {
   });
 
   test("does not match the name inside another word", () => {
-    expect(found("Maximilian Maxwell", PROFILE)).toEqual([]);
-  });
-
-  test("splits double first names but not surnames", () => {
-    const profile = {
-      ...NO_PROFILE,
-      firstName: "Hans-Peter",
-      lastName: "von Muster",
-    };
-    expect(found("Hans, von Muster, von Amts wegen", profile)).toEqual([
-      ["name", "Hans"],
-      ["name", "von Muster"],
-    ]);
+    expect(foundAfter(BLOCK, "Maximilian Maxwell")).toEqual([]);
   });
 
   const streetSpellings = [
@@ -236,35 +424,14 @@ describe("profile", () => {
   ];
   test.each(
     ["Musterstraße 12", "Musterstrasse 12", "Musterstr. 12"].flatMap(
-      (inProfile) =>
-        streetSpellings.map((inLetter) => [inProfile, inLetter] as const),
+      (inBlock) =>
+        streetSpellings.map((inLetter) => [inBlock, inLetter] as const),
     ),
-  )("profile street %s finds %s", (inProfile, inLetter) => {
-    const profile = { ...PROFILE, street: inProfile };
-    expect(found(`${inLetter}, 12345 Musterstadt`, profile)).toEqual([
+  )("street %s in the block finds %s", (inBlock, inLetter) => {
+    const block = `Herrn\nMax Mustermann\n${inBlock}\n12345 Musterstadt`;
+    expect(foundAfter(block, `wohnhaft ${inLetter}`)).toEqual([
       ["address", inLetter],
-      ["address", "12345 Musterstadt"],
     ]);
-  });
-
-  test("redacts the postal code alone when the profile has no city", () => {
-    const profile = { ...NO_PROFILE, postalCode: "12345" };
-    expect(found("12345 Musterstadt, nicht 123456", profile)).toEqual([
-      ["address", "12345"],
-    ]);
-  });
-
-  test("leaves the city when it is not next to the postal code", () => {
-    expect(
-      found(
-        "Jobcenter Musterstadt, Postfach 10 20 30, 12340 Musterstadt",
-        PROFILE,
-      ),
-    ).toEqual([]);
-  });
-
-  test("leaves another house number in the same street", () => {
-    expect(found("Musterstraße 120", PROFILE)).toEqual([]);
   });
 });
 
@@ -276,7 +443,7 @@ describe("overlapping matches", () => {
   });
 
   test("an e-mail address wins over the name inside it", () => {
-    expect(found("max.mustermann@example.de", PROFILE)).toEqual([
+    expect(foundAfter(BLOCK, "max.mustermann@example.de")).toEqual([
       ["email", "max.mustermann@example.de"],
     ]);
   });
@@ -290,20 +457,19 @@ describe("redact and restore", () => {
   test("numbers placeholders per kind and reuses them for equal values", () => {
     const text =
       "DE89 3704 0044 0532 0130 00, Tel. 030 1234567, DE89 3704 0044 0532 0130 00, Tel. 040 7654321";
-    const { text: redacted } = redact(text, findSensitive(text, NO_PROFILE));
+    const { text: redacted } = redact(text, findSensitive(text));
     expect(redacted).toBe("[IBAN_1], Tel. [PHONE_1], [IBAN_1], Tel. [PHONE_2]");
   });
 
   test("restores every placeholder in an answer, in any order", () => {
-    const text = "Herr Max Mustermann, Kundennummer 123D456789";
-    const { text: redacted, originals } = redact(
-      text,
-      findSensitive(text, PROFILE),
+    const text = "Sehr geehrter Herr Mustermann,\nKundennummer 123D456789";
+    const { text: redacted, originals } = redact(text, findSensitive(text));
+    expect(redacted).toBe(
+      "Sehr geehrter Herr [NAME_1],\nKundennummer [CUSTOMER_NO_1]",
     );
-    expect(redacted).toBe("Herr [NAME_1], Kundennummer [CUSTOMER_NO_1]");
     expect(
       restore("[CUSTOMER_NO_1] gehört [NAME_1]; [NAME_1] zahlt.", originals),
-    ).toBe("123D456789 gehört Max Mustermann; Max Mustermann zahlt.");
+    ).toBe("123D456789 gehört Mustermann; Mustermann zahlt.");
   });
 
   test("leaves a placeholder that the model invented", () => {
@@ -359,16 +525,15 @@ describe("a whole letter", () => {
     "Ihr Jobcenter Musterstadt",
   ].join("\n");
 
-  const { text: redacted, originals } = redact(
-    letter,
-    findSensitive(letter, PROFILE),
-  );
+  const { text: redacted, originals } = redact(letter, findSensitive(letter));
 
   test("removes every personal value", () => {
     for (const value of [
       "Mustermann",
       "Musterstr. 12",
       "12345 Musterstadt",
+      "Postfach 10 20 30",
+      "12340 Musterstadt",
       "541.12",
       "12345BG0012345",
       "123D456789",
@@ -383,7 +548,7 @@ describe("a whole letter", () => {
   // If redaction ate a date or an amount, the deadline and the card would be wrong.
   test("keeps the sender, dates, deadlines, amounts and legal references", () => {
     for (const value of [
-      "Jobcenter Musterstadt · Postfach 10 20 30 · 12340 Musterstadt",
+      "Jobcenter Musterstadt · [ADDRESS_",
       "Datum: 01.12.2026",
       "vom 14.11.2026",
       "innerhalb von 14 Tagen, spätestens bis zum\n15.12.2026",
@@ -400,5 +565,46 @@ describe("a whole letter", () => {
 
   test("restores the original letter from the redacted text", () => {
     expect(restore(redacted, originals)).toBe(letter);
+  });
+});
+
+describe("a letter with a joined address block and no name in the salutation", () => {
+  const letter = [
+    "Finanzamt Musterstadt · Musterallee 1 · 12340 Musterstadt",
+    "Frau Dr. Erika Musterfrau Am Lindenhof 4b 12345 Musterdorf",
+    "Steuernummer 12/345/67890   Datum 02.12.2026",
+    "Sehr geehrte Damen und Herren,",
+    "für Erika Musterfrau setzen wir die Einkommensteuer 2025 auf 1.234,00 € fest.",
+    "Ein Einspruch ist innerhalb eines Monats nach Bekanntgabe möglich.",
+    "Ihr Finanzamt Musterstadt",
+  ].join("\n");
+  const { text: redacted } = redact(letter, findSensitive(letter));
+
+  test("removes the name and both addresses", () => {
+    for (const value of [
+      "Erika",
+      "Musterfrau",
+      "Am Lindenhof 4b",
+      "12345 Musterdorf",
+      "Musterallee 1",
+      "12340 Musterstadt",
+      "12/345/67890",
+    ]) {
+      expect(redacted).not.toContain(value);
+    }
+  });
+
+  test("keeps the sender, the date, the amount and the deadline", () => {
+    for (const value of [
+      "Finanzamt Musterstadt · [ADDRESS_",
+      "Frau Dr. [NAME_1] [ADDRESS_",
+      "Datum 02.12.2026",
+      "Sehr geehrte Damen und Herren,",
+      "1.234,00 €",
+      "innerhalb eines Monats",
+      "Ihr Finanzamt Musterstadt",
+    ]) {
+      expect(redacted).toContain(value);
+    }
   });
 });
